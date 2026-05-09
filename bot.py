@@ -12,8 +12,13 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 import PyPDF2
-from xhtml2pdf import pisa
-from io import BytesIO
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 
 # Load token
 load_dotenv()
@@ -34,31 +39,26 @@ def number_to_words(amount):
     if not isinstance(amount, (int, float)) or amount < 0:
         return ""
     
-    # Split into rupees and paise
     rupees = int(amount)
     paise = int(round((amount - rupees) * 100))
     
     result_words = []
     
-    # Crores
     crores = rupees // 10000000
     rupees %= 10000000
     if crores > 0:
         result_words.append(f"{crores} Crore")
     
-    # Lakhs
     lakhs = rupees // 100000
     rupees %= 100000
     if lakhs > 0:
         result_words.append(f"{lakhs} Lakh")
     
-    # Thousands
     thousands = rupees // 1000
     rupees %= 1000
     if thousands > 0:
         result_words.append(f"{thousands} Thousand")
     
-    # Remaining rupees
     if rupees > 0:
         result_words.append(str(rupees))
     
@@ -83,13 +83,11 @@ def format_amount(num):
     if not isinstance(num, (int, float)):
         return ""
     s = f"{num:,.2f}"
-    # Convert to Indian format
     parts = s.split('.')
     integer_part = parts[0].replace(',', '')
     if len(integer_part) > 3:
         last_three = integer_part[-3:]
         remaining = integer_part[:-3]
-        # Add commas every 2 digits for Indian format
         result = ""
         while len(remaining) > 2:
             result = "," + remaining[-2:] + result
@@ -101,7 +99,7 @@ def format_amount(num):
 
 
 def extract_data_from_pdf(pdf_path):
-    """Extract data from PDF using the React code logic"""
+    """Extract data from PDF"""
     try:
         with open(pdf_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
@@ -123,22 +121,17 @@ def extract_data_from_pdf(pdf_path):
         
         if is_hdb_doc:
             hdb_finance = True
-            
-            # Customer name
             customer_match = re.search(r'to our Customer\s+(.+?)\s+\. Pursuant', full_text, re.I)
             customer_name = customer_match.group(1).strip() if customer_match else ""
             
-            # Manufacturer
             brand_match = re.search(r'Product Brand\s*:\s*([^\s]+)', full_text, re.I)
             manufacturer = brand_match.group(1).strip() if brand_match else ""
             
-            # Model
             model_start = full_text.find('Product Model :')
             model_end = full_text.find('Scheme Code & EMI')
             if model_start != -1 and model_end != -1 and model_end > model_start:
                 model = full_text[model_start + len('Product Model :'):model_end].strip()
             
-            # Asset cost
             label = 'A. Product Cost'
             idx = full_text.find(label)
             if idx != -1:
@@ -152,11 +145,9 @@ def extract_data_from_pdf(pdf_path):
                 if num_str:
                     asset_cost = float(num_str.replace(',', ''))
             
-            # Address
             address_match = re.search(r'Customer Address\s*:\s*([\s\S]*?\d{6})', full_text, re.I)
             customer_address = address_match.group(1).strip() if address_match else ""
             
-            # Serial number
             serial_start = full_text.find('Serial Number')
             model_number_start = full_text.find('Model Number', serial_start + 1)
             if serial_start != -1 and model_number_start != -1 and model_number_start > serial_start:
@@ -165,11 +156,9 @@ def extract_data_from_pdf(pdf_path):
             asset_category = "Electronics"
             
         elif is_idfc_bank_doc:
-            # Customer name
             customer_match = re.search(r'loan application of (.+?) has been approved for', full_text, re.I)
             customer_name = f"{customer_match.group(1).strip()} [IDFC FIRST BANK]" if customer_match else ""
             
-            # Asset category
             asset_category_match = re.search(r'Asset Category:?[ \t]*([A-Za-z\s]+?)(?=\s*(?:D\s*Model Number|Model Number|Serial Number|Asset Cost|$))', full_text, re.I)
             if asset_category_match:
                 asset_category = asset_category_match.group(1).strip()
@@ -178,7 +167,6 @@ def extract_data_from_pdf(pdf_path):
             
             manufacturer = ""
             
-            # Address
             para = "The required formalities with the customer have been completed and hence we request you to collect the down payment and only deliver the product at the following address post device validation is completed and final DA is received."
             para_idx = full_text.find(para)
             if para_idx != -1:
@@ -192,25 +180,21 @@ def extract_data_from_pdf(pdf_path):
                     else:
                         customer_address = after_address.strip()
             
-            # Model
             model_match = re.search(r'Model Number:?[ \t]*([^\n\r]+?)(?=\s*(?:Scheme Name|Serial Number|Asset Category|Asset Cost|\n|\r|$))', full_text, re.I)
             if model_match:
                 model = model_match.group(1).strip()
                 if model.endswith('E'):
                     model = model[:-1].strip()
             
-            # Serial number
             serial_number_match = re.search(r'Serial Number:?[ \t]*([^ \t\n]+)', full_text, re.I)
             serial_number = serial_number_match.group(1).strip() if serial_number_match else ""
             
-            # Asset cost
             asset_cost_match = re.search(r'Cost Of Product[\s:]*([\d,\.]+)', full_text, re.I)
             if asset_cost_match:
                 cost_str = asset_cost_match.group(1).replace(',', '')
                 asset_cost = float(cost_str)
         
         else:
-            # Generic PDF
             customer_match = re.search(r'Customer Name:?[ \t]*([A-Za-z]+(?:\s+[A-Za-z]+){0,2})', full_text, re.I)
             customer_name = customer_match.group(1).strip() if customer_match else ""
             customer_name = re.sub(r'\s+Customer$', '', customer_name).strip()
@@ -254,7 +238,7 @@ def extract_data_from_pdf(pdf_path):
 
 
 def calculate_tax_details(asset_cost, asset_category):
-    """Calculate tax details based on asset category"""
+    """Calculate tax details"""
     is_air_conditioner = "AIR CONDITIONER" in asset_category.upper()
     
     if is_air_conditioner:
@@ -282,306 +266,239 @@ def calculate_tax_details(asset_cost, asset_category):
     }
 
 
-
-def generate_bill_html(extracted_data, invoice_number):
-    """Generate the exact HTML matching the invoice format"""
-    tax_details = calculate_tax_details(extracted_data['assetCost'], extracted_data['assetCategory'])
-    amount_in_words = number_to_words(extracted_data['assetCost'])
-    tax_amount_in_words = number_to_words(tax_details['totalTaxAmount'])
-    serial_to_display = extracted_data['imeiSerialNumber'] or ''
+def generate_invoice_pdf(pdf_path, invoice_number, output_path):
+    """Use Selenium to upload PDF to website and download result"""
     
-    current_date = datetime.now().strftime('%d %b %Y')
+    # Setup Chrome options
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
     
-    hdb_finance_row = ''
-    if extracted_data['hdbFinance']:
-        hdb_finance_row = '''
-            <tr>
-                <td colspan="7" style="text-align:center; font-weight:bold; color:#1a237e; font-size:10px; padding:8px;">
-                    FINANCE BY HDBFS
-                </td>
-            </tr>
-        '''
+    # Download preferences
+    download_dir = os.path.abspath("downloads")
+    os.makedirs(download_dir, exist_ok=True)
     
-    serial_row = f'<b>Serial Number:</b> {serial_to_display}<br>' if serial_to_display else ''
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "plugins.always_open_pdf_externally": True,
+        "printing.print_preview_sticky_settings.appState": '{"recentDestinations":[{"id":"Save as PDF","origin":"local","account":""}],"selectedDestinationId":"Save as PDF","version":2}'
+    }
+    options.add_experimental_option("prefs", prefs)
     
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Tax Invoice</title>
-        <style>
-            @page {{
-                size: A4;
-                margin: 8mm;
-            }}
-            * {{
-                margin: 0;
-                padding: 0;
-                box-sizing: border-box;
-            }}
-            body {{
-                font-family: Arial, sans-serif;
-                font-size: 8px;
-                line-height: 1.3;
-                padding: 3mm;
-            }}
-            .invoice-title {{
-                text-align: center;
-                font-size: 18px;
-                font-weight: bold;
-                margin-bottom: 5px;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin: 0;
-            }}
-            td {{
-                border: 1px solid #000;
-                padding: 3px 5px;
-                vertical-align: top;
-                font-size: 8px;
-            }}
-            .no-border {{
-                border: none;
-            }}
-            .text-center {{
-                text-align: center;
-            }}
-            .text-right {{
-                text-align: right;
-            }}
-            .font-bold {{
-                font-weight: bold;
-            }}
-            .bg-light {{
-                background-color: #f0f0f0;
-            }}
-            .company-cell {{
-                font-size: 8px;
-                line-height: 1.4;
-            }}
-            .separator {{
-                border-top: 1px solid #000;
-                margin: 3px 0;
-                padding: 0;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="invoice-title">Tax Invoice</div>
+    driver = None
+    
+    try:
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         
-        <!-- Header Table -->
-        <table style="margin-bottom: 0;">
-            <tr>
-                <td rowspan="6" style="width: 40%; font-size: 8px; padding: 5px;">
-                    <div class="font-bold">KATIYAR ELECTRONICS</div>
-                    <div>H.I.G.J-33 VISHWABANK BARRA</div>
-                    <div>KARRAHI</div>
-                    <div>KANPUR NAGAR</div>
-                    <div>GSTIN/UIN: 09AMTPK9751D1ZH</div>
-                    <div>State Name: Uttar Pradesh, Code: 09</div>
-                    <div>E-Mail: katiyars952@gmail.com</div>
-                    <div class="separator"></div>
-                    <div class="font-bold">Consignee (Ship to)</div>
-                    <div>{extracted_data['customerName']}</div>
-                    <div>{extracted_data['customerAddress']}</div>
-                    <div class="separator"></div>
-                    <div class="font-bold">Buyer (Bill to)</div>
-                    <div>{extracted_data['customerName']}</div>
-                    <div>{extracted_data['customerAddress']}</div>
-                </td>
-                <td style="width: 30%; text-align: center; font-weight: bold; padding: 5px;">
-                    Invoice No.<br><br>{invoice_number}
-                </td>
-                <td style="width: 30%; text-align: center; font-weight: bold; padding: 5px;">
-                    Dated<br><br>{current_date}
-                </td>
-            </tr>
-            <tr>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Delivery Note<br><br></td>
-                <td style="padding: 5px;"></td>
-            </tr>
-            <tr>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Buyer's Order No.<br><br></td>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Dated<br><br></td>
-            </tr>
-            <tr>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Dispatch Doc No.<br><br></td>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Delivery Note Date<br><br></td>
-            </tr>
-            <tr>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Dispatched through<br><br></td>
-                <td style="text-align: center; font-weight: bold; padding: 5px;">Destination<br><br></td>
-            </tr>
-            <tr>
-                <td colspan="2" style="padding: 5px;"></td>
-            </tr>
-        </table>
+        print("Navigating to website...")
+        driver.get("https://katiyarelectronics1-three.vercel.app/")
+        wait = WebDriverWait(driver, 30)
         
-        <!-- Items Table -->
-        <table style="margin-top: 0;">
-            <tr style="background-color: #f0f0f0;">
-                <td style="width: 3%; text-align: center; font-weight: bold; padding: 3px;">Sl</td>
-                <td style="width: 37%; text-align: center; font-weight: bold; padding: 3px;">Description of Goods</td>
-                <td style="width: 10%; text-align: center; font-weight: bold; padding: 3px;">HSN/SAC</td>
-                <td style="width: 10%; text-align: center; font-weight: bold; padding: 3px;">Quantity</td>
-                <td style="width: 15%; text-align: center; font-weight: bold; padding: 3px;">Rate</td>
-                <td style="width: 5%; text-align: center; font-weight: bold; padding: 3px;">per</td>
-                <td style="width: 20%; text-align: center; font-weight: bold; padding: 3px;">Amount</td>
-            </tr>
-            <tr>
-                <td style="text-align: center; padding: 3px;">1</td>
-                <td style="padding: 5px; height: 380px;">
-                    <div style="font-weight: bold; margin-bottom: 8px;">{extracted_data['manufacturer']} {extracted_data['assetCategory']}</div>
-                    <div style="margin-bottom: 3px;"><b>Model No:</b> {extracted_data['model']}</div>
-                    {f'<div style="margin-bottom: 3px;"><b>Serial Number:</b> {serial_to_display}</div>' if serial_to_display else ''}
-                    <div style="margin-top: 10px;">
-                        <div style="display: table; width: 100%;">
-                            <div style="display: table-row;">
-                                <div style="display: table-cell; width: 50%;"><b>CGST</b></div>
-                                <div style="display: table-cell; width: 50%; text-align: right;">{format_amount(tax_details['cgst'])}</div>
-                            </div>
-                            <div style="display: table-row;">
-                                <div style="display: table-cell; width: 50%;"><b>SGST</b></div>
-                                <div style="display: table-cell; width: 50%; text-align: right;">{format_amount(tax_details['sgst'])}</div>
-                            </div>
-                        </div>
-                    </div>
-                </td>
-                <td style="text-align: center; padding: 3px;"></td>
-                <td style="text-align: center; padding: 3px;">1 PCS</td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['rate'])}</td>
-                <td style="text-align: center; padding: 3px;">PCS</td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['rate'])}</td>
-            </tr>
-            <tr>
-                <td colspan="6" style="text-align: right; font-weight: bold; padding: 3px;">Total</td>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">₹ {format_amount(extracted_data['assetCost'])}</td>
-            </tr>
-        </table>
+        # Wait for page to load
+        time.sleep(3)
         
-        <!-- Amount in Words -->
-        <table style="margin-top: 0;">
-            <tr>
-                <td style="padding: 5px;">
-                    <div style="font-weight: bold;">Amount Chargeable (in words)</div>
-                    <div style="font-weight: bold;">INR {amount_in_words}</div>
-                </td>
-            </tr>
-        </table>
+        print("Looking for file input...")
+        # Find file input
+        file_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='file']")))
+        print("Found file input, uploading PDF...")
+        file_input.send_keys(os.path.abspath(pdf_path))
         
-        <!-- Tax Table -->
-        <table style="margin-top: 0;">
-            <tr style="background-color: #f0f0f0;">
-                <td rowspan="2" style="width: 12%; text-align: center; font-weight: bold; padding: 3px;">HSN/SAC</td>
-                <td rowspan="2" style="width: 18%; text-align: center; font-weight: bold; padding: 3px;">Taxable Value</td>
-                <td colspan="2" style="text-align: center; font-weight: bold; padding: 3px;">Central Tax</td>
-                <td colspan="2" style="text-align: center; font-weight: bold; padding: 3px;">State Tax</td>
-                <td rowspan="2" style="width: 18%; text-align: center; font-weight: bold; padding: 3px;">Total Tax Amount</td>
-            </tr>
-            <tr style="background-color: #f0f0f0;">
-                <td style="width: 10%; text-align: center; font-weight: bold; padding: 3px;">Rate</td>
-                <td style="width: 16%; text-align: center; font-weight: bold; padding: 3px;">Amount</td>
-                <td style="width: 10%; text-align: center; font-weight: bold; padding: 3px;">Rate</td>
-                <td style="width: 16%; text-align: center; font-weight: bold; padding: 3px;">Amount</td>
-            </tr>
-            <tr>
-                <td style="text-align: center; padding: 3px;"></td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['taxableValue'])}</td>
-                <td style="text-align: center; padding: 3px;">{tax_details['taxRate']}%</td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['cgst'])}</td>
-                <td style="text-align: center; padding: 3px;">{tax_details['taxRate']}%</td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['sgst'])}</td>
-                <td style="text-align: center; padding: 3px;">{format_amount(tax_details['totalTaxAmount'])}</td>
-            </tr>
-            <tr>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">Total</td>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">{format_amount(tax_details['taxableValue'])}</td>
-                <td style="padding: 3px;"></td>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">{format_amount(tax_details['cgst'])}</td>
-                <td style="padding: 3px;"></td>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">{format_amount(tax_details['sgst'])}</td>
-                <td style="text-align: center; font-weight: bold; padding: 3px;">{format_amount(tax_details['totalTaxAmount'])}</td>
-            </tr>
-            <tr>
-                <td colspan="7" style="text-align: center; font-weight: bold; padding: 5px;">
-                    Tax Amount (in words): INR {tax_amount_in_words}
-                </td>
-            </tr>
-            {hdb_finance_row}
-        </table>
+        # Wait for PDF to process
+        time.sleep(5)
         
-        <!-- Footer Table -->
-        <table style="margin-top: 3px;">
-            <tr>
-                <td style="width: 50%; padding: 5px;">
-                    <div style="font-weight: bold; margin-bottom: 3px;">Declaration</div>
-                    <div>We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.</div>
-                </td>
-                <td style="width: 25%; padding: 5px;">
-                    <div style="font-weight: bold; margin-bottom: 8px;">Pre Authenticated by</div>
-                    <div style="margin-top: 20px;">Authorised Signatory</div>
-                    <div>Name:</div>
-                    <div>Designation:</div>
-                </td>
-                <td style="width: 25%; text-align: center; padding: 5px;">
-                    <div style="font-weight: bold; margin-bottom: 8px;">for KATIYAR ELECTRONICS</div>
-                    <div style="margin-top: 20px;">Authorised Signatory</div>
-                    <div>Name:</div>
-                    <div>Designation:</div>
-                </td>
-            </tr>
-        </table>
+        print("Looking for invoice number input...")
+        # Find invoice number input - try multiple selectors
+        invoice_input = None
+        input_selectors = [
+            "//input[contains(translate(@placeholder, 'INVOICE', 'invoice'), 'invoice')]",
+            "//input[@type='text']",
+            "//input[@type='number']",
+            "input[type='text']",
+            "input[type='number']",
+            "input"
+        ]
         
-        <div style="text-align: center; font-size: 8px; margin-top: 8px;">
-            <div style="font-weight: bold;">SUBJECT TO KANPUR JURISDICTION</div>
-            <div>This is a Computer Generated Invoice</div>
-        </div>
-    </body>
-    </html>
-    """
-    return html
+        for selector in input_selectors:
+            try:
+                if selector.startswith("//"):
+                    inputs = driver.find_elements(By.XPATH, selector)
+                else:
+                    inputs = driver.find_elements(By.CSS_SELECTOR, selector)
+                
+                for inp in inputs:
+                    try:
+                        if inp.is_displayed() and inp.is_enabled() and inp.get_attribute('type') != 'file':
+                            invoice_input = inp
+                            print(f"Found input field with selector: {selector}")
+                            break
+                    except:
+                        continue
+                if invoice_input:
+                    break
+            except:
+                continue
+        
+        if not invoice_input:
+            raise Exception("Could not find invoice number input field")
+        
+        print(f"Found invoice input, entering: {invoice_number}")
+        invoice_input.clear()
+        invoice_input.send_keys(invoice_number)
+        
+        time.sleep(2)
+        
+        print("Looking for download button...")
+        # Find download button - try multiple selectors
+        button_selectors = [
+            "//button[contains(translate(text(), 'PRINTDOWNLOAD', 'printdownload'), 'print')]",
+            "//button[contains(translate(text(), 'PRINTDOWNLOAD', 'printdownload'), 'download')]",
+            "//button[contains(., 'Print')]",
+            "//button[contains(., 'Download')]",
+            "//input[@type='button' and contains(@value, 'Print')]",
+            "//input[@type='button' and contains(@value, 'Download')]",
+            "button"
+        ]
+        
+        button = None
+        for selector in button_selectors:
+            try:
+                if selector.startswith("//"):
+                    buttons = driver.find_elements(By.XPATH, selector)
+                else:
+                    buttons = driver.find_elements(By.CSS_SELECTOR, selector)
+                
+                for btn in buttons:
+                    try:
+                        if btn.is_displayed() and btn.is_enabled():
+                            button_text = btn.text.lower()
+                            if 'print' in button_text or 'download' in button_text or selector == "button":
+                                button = btn
+                                print(f"Found button: '{btn.text}' with selector: {selector}")
+                                break
+                    except:
+                        continue
+                if button:
+                    break
+            except:
+                continue
+        
+        if not button:
+            raise Exception("Could not find download button")
+        
+        print("Clicking download button...")
+        
+        # Store the current window handle
+        original_window = driver.current_window_handle
+        all_windows_before = driver.window_handles
+        
+        driver.execute_script("arguments[0].click();", button)
+        
+        # Wait a moment for any new window/tab to open
+        time.sleep(3)
+        
+        # Check if a new window/tab opened
+        all_windows_after = driver.window_handles
+        
+        if len(all_windows_after) > len(all_windows_before):
+            # New window opened, switch to it
+            print("New window detected, switching...")
+            for window in all_windows_after:
+                if window != original_window:
+                    driver.switch_to.window(window)
+                    print(f"Switched to new window: {driver.current_url}")
+                    break
+        else:
+            print("No new window, staying on current page")
+        
+        # Wait for the invoice page to fully load
+        print("Waiting for invoice page to render...")
+        time.sleep(8)
+        
+        print(f"Current URL: {driver.current_url}")
+        print(f"Page title: {driver.title}")
+        
+        # Take a screenshot for debugging
+        try:
+            debug_screenshot = "debug_invoice_page.png"
+            driver.save_screenshot(debug_screenshot)
+            print(f"Debug screenshot saved: {debug_screenshot}")
+        except:
+            pass
+        
+        # Try to detect invoice content
+        try:
+            invoice_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Tax Invoice') or contains(text(), 'INVOICE') or contains(text(), 'Invoice') or contains(text(), 'KATIYAR')]")
+            if invoice_elements:
+                print(f"Found {len(invoice_elements)} invoice-related elements")
+            else:
+                print("Warning: No invoice elements found")
+        except Exception as e:
+            print(f"Could not search for invoice elements: {e}")
+        
+        time.sleep(2)
+        
+        print("Generating PDF from current page...")
+        # Use Chrome's print to PDF
+        result = driver.execute_cdp_cmd("Page.printToPDF", {
+            "printBackground": True,
+            "landscape": False,
+            "paperWidth": 8.27,  # A4 width in inches
+            "paperHeight": 11.69,  # A4 height in inches
+            "marginTop": 0.4,
+            "marginBottom": 0.4,
+            "marginLeft": 0.4,
+            "marginRight": 0.4,
+            "preferCSSPageSize": True,
+            "displayHeaderFooter": False,
+            "scale": 1.0
+        })
+        
+        # Save the PDF
+        import base64
+        with open(output_path, 'wb') as f:
+            f.write(base64.b64decode(result['data']))
+        
+        print(f"PDF saved: {output_path}")
+        
+        if not os.path.exists(output_path):
+            raise Exception("Failed to generate PDF")
+        
+        return output_path
+        
+    except Exception as e:
+        print(f"Error in generate_invoice_pdf: {str(e)}")
+        if driver:
+            try:
+                screenshot_path = "error_screenshot.png"
+                driver.save_screenshot(screenshot_path)
+                print(f"Screenshot saved to {screenshot_path}")
+            except:
+                pass
+        raise
+        
+    finally:
+        if driver:
+            driver.quit()
 
 
-def generate_invoice_pdf(extracted_data, invoice_number, output_path):
-    """Generate PDF from HTML using xhtml2pdf"""
-    html_content = generate_bill_html(extracted_data, invoice_number)
-    
-    with open(output_path, "wb") as pdf_file:
-        pisa_status = pisa.CreatePDF(html_content, dest=pdf_file)
-    
-    if pisa_status.err:
-        raise Exception("Error generating PDF")
-    
-    print(f"Invoice PDF generated: {output_path}")
-
-
-# Telegram bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"Received /start from {update.effective_user.username}")
-    await update.message.reply_text(
-        "Welcome to Invoice Generator Bot!\n\n"
-        "Send me a PDF file to get started."
-    )
+    await update.message.reply_text("Welcome! Send me a PDF file.")
     return WAITING_FOR_PDF
 
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"Received document from {update.effective_user.username}")
     document = update.message.document
-    
     if document.mime_type != "application/pdf":
         await update.message.reply_text("Please send a valid PDF file.")
         return WAITING_FOR_PDF
-    
     file = await context.bot.get_file(document.file_id)
     file_path = f"temp_{update.effective_user.id}_{document.file_name}"
     await file.download_to_drive(file_path)
-    
     user_data_store[update.effective_user.id] = {"pdf_path": file_path}
-    
     await update.message.reply_text("PDF received! Now send me the Invoice Number.")
     return WAITING_FOR_INVOICE
 
@@ -589,55 +506,38 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invoice_number = update.message.text.strip()
     user_id = update.effective_user.id
-    
     if user_id not in user_data_store:
         await update.message.reply_text("Please send a PDF first using /start")
         return ConversationHandler.END
-    
     pdf_path = user_data_store[user_id]["pdf_path"]
-    
-    await update.message.reply_text("Processing... Extracting data and generating invoice...")
-    
+    await update.message.reply_text("Processing...")
     try:
-        # Extract data from PDF
         extracted_data = extract_data_from_pdf(pdf_path)
-        
-        # Generate invoice PDF
         output_path = f"invoice_{invoice_number}_{user_id}.pdf"
-        generate_invoice_pdf(extracted_data, invoice_number, output_path)
-        
-        # Send the generated PDF back
+        generate_invoice_pdf(pdf_path, invoice_number, output_path)
         with open(output_path, 'rb') as pdf_file:
             await update.message.reply_document(
                 document=pdf_file,
                 filename=f"invoice_{invoice_number}.pdf",
-                caption=f"✅ Invoice generated successfully!\n\n"
-                        f"Customer: {extracted_data['customerName']}\n"
-                        f"Amount: ₹{format_amount(extracted_data['assetCost'])}"
+                caption=f"✅ Invoice generated!\n\nCustomer: {extracted_data['customerName']}\nAmount: ₹{format_amount(extracted_data['assetCost'])}"
             )
-        
-        # Cleanup
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
         if os.path.exists(output_path):
             os.remove(output_path)
-        
         del user_data_store[user_id]
-        
-        await update.message.reply_text("Done! Send /start to process another invoice.")
-        
+        await update.message.reply_text("Done! Send /start for another invoice.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error processing invoice: {str(e)}\n\nPlease try again with /start")
+        await update.message.reply_text(f"❌ Error: {str(e)}\n\nTry again with /start")
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
         if user_id in user_data_store:
             del user_data_store[user_id]
-    
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled. Send /start to begin again.")
+    await update.message.reply_text("Cancelled. Send /start to begin again.")
     user_id = update.effective_user.id
     if user_id in user_data_store:
         pdf_path = user_data_store[user_id].get("pdf_path")
@@ -647,10 +547,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Main app
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -659,11 +557,8 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-    
     app.add_handler(conv_handler)
-    
-    print("✅ Invoice Generator Bot is running...")
-    print(f"Token: {TOKEN[:10]}...")
+    print("✅ Bot running...")
     app.run_polling()
 
 
