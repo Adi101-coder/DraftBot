@@ -1,5 +1,5 @@
-python-telegram-bot==20.7
-python-dotenv==1.0.0
+python-telegram-bot==21.10
+python-dotenv==1.0.1
 PyPDF2==3.0.1
-selenium==4.16.0
-webdriver-manager==4.0.1
+selenium==4.27.1
+webdriver-manager==4.0.2
