@@ -271,11 +271,18 @@ def generate_invoice_pdf(pdf_path, invoice_number, output_path, serial_number=No
     
     # Setup Chrome options
     options = webdriver.ChromeOptions()
-    options.add_argument('--headless')
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--disable-extensions')
     options.add_argument('--window-size=1920,1080')
+    options.add_argument('--remote-debugging-port=9222')
+    
+    # Check if running in Docker/Linux environment
+    if os.path.exists('/usr/bin/chromium'):
+        options.binary_location = '/usr/bin/chromium'
     
     # Download preferences
     download_dir = os.path.abspath("downloads")
@@ -292,7 +299,15 @@ def generate_invoice_pdf(pdf_path, invoice_number, output_path, serial_number=No
     driver = None
     
     try:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        # Try to use system ChromeDriver first (for Docker), then fall back to webdriver-manager
+        try:
+            if os.path.exists('/usr/bin/chromedriver'):
+                driver = webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=options)
+            else:
+                driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        except Exception as e:
+            print(f"Error initializing Chrome: {e}")
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         
         print("Navigating to website...")
         driver.get("https://katiyarelectronics1-three.vercel.app/")
