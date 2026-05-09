@@ -25,7 +25,7 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
 # Conversation states
-WAITING_FOR_PDF, WAITING_FOR_INVOICE = range(2)
+WAITING_FOR_PDF, WAITING_FOR_INVOICE, WAITING_FOR_SERIAL = range(3)
 
 # Store user data temporarily
 user_data_store = {}
@@ -266,7 +266,7 @@ def calculate_tax_details(asset_cost, asset_category):
     }
 
 
-def generate_invoice_pdf(pdf_path, invoice_number, output_path):
+def generate_invoice_pdf(pdf_path, invoice_number, output_path, serial_number=None):
     """Use Selenium to upload PDF to website and download result"""
     
     # Setup Chrome options
@@ -348,6 +348,45 @@ def generate_invoice_pdf(pdf_path, invoice_number, output_path):
         print(f"Found invoice input, entering: {invoice_number}")
         invoice_input.clear()
         invoice_input.send_keys(invoice_number)
+        
+        time.sleep(2)
+        
+        # Handle serial number if provided
+        if serial_number:
+            print(f"Looking for serial number input field...")
+            serial_input = None
+            serial_selectors = [
+                "//input[contains(translate(@placeholder, 'SERIAL', 'serial'), 'serial')]",
+                "//input[contains(translate(@placeholder, 'IMEI', 'imei'), 'imei')]",
+                "//label[contains(translate(text(), 'SERIAL', 'serial'), 'serial')]/following::input[1]",
+                "//label[contains(translate(text(), 'IMEI', 'imei'), 'imei')]/following::input[1]"
+            ]
+            
+            for selector in serial_selectors:
+                try:
+                    inputs = driver.find_elements(By.XPATH, selector)
+                    for inp in inputs:
+                        try:
+                            if inp.is_displayed() and inp.is_enabled() and inp.get_attribute('type') != 'file':
+                                serial_input = inp
+                                print(f"Found serial input field with selector: {selector}")
+                                break
+                        except:
+                            continue
+                    if serial_input:
+                        break
+                except:
+                    continue
+            
+            if serial_input:
+                print(f"Entering serial number: {serial_number}")
+                serial_input.clear()
+                serial_input.send_keys(serial_number)
+                time.sleep(1)
+            else:
+                print("Warning: Could not find serial number input field, continuing without it...")
+        else:
+            print("No serial number provided, skipping...")
         
         time.sleep(2)
         
@@ -509,12 +548,33 @@ async def handle_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_data_store:
         await update.message.reply_text("Please send a PDF first using /start")
         return ConversationHandler.END
+    user_data_store[user_id]["invoice_number"] = invoice_number
+    await update.message.reply_text("Invoice number received!\n\nNow send the Serial Number (or press Enter/send '-' to skip if you don't want to add one).")
+    return WAITING_FOR_SERIAL
+
+
+async def handle_serial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    serial_number = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    if user_id not in user_data_store:
+        await update.message.reply_text("Please send a PDF first using /start")
+        return ConversationHandler.END
+    
+    # Check if user wants to skip serial number
+    if serial_number == "-" or serial_number == "" or serial_number.lower() == "skip":
+        serial_number = None
+        await update.message.reply_text("Skipping serial number. Processing...")
+    else:
+        await update.message.reply_text(f"Serial number received: {serial_number}\n\nProcessing...")
+    
     pdf_path = user_data_store[user_id]["pdf_path"]
-    await update.message.reply_text("Processing...")
+    invoice_number = user_data_store[user_id]["invoice_number"]
+    
     try:
         extracted_data = extract_data_from_pdf(pdf_path)
         output_path = f"invoice_{invoice_number}_{user_id}.pdf"
-        generate_invoice_pdf(pdf_path, invoice_number, output_path)
+        generate_invoice_pdf(pdf_path, invoice_number, output_path, serial_number)
         with open(output_path, 'rb') as pdf_file:
             await update.message.reply_document(
                 document=pdf_file,
@@ -554,6 +614,7 @@ def main():
         states={
             WAITING_FOR_PDF: [MessageHandler(filters.Document.PDF, handle_pdf)],
             WAITING_FOR_INVOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invoice)],
+            WAITING_FOR_SERIAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_serial)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
